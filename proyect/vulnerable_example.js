@@ -12,6 +12,10 @@ function displayUserGreeting() {
     document.getElementById('greeting').innerHTML = `<h1>Hello ${name}</h1>`;
 }
 
+
+
+
+
 // VULNERABLE: DOM-based XSS
 function loadContentFromURL() {
     // CWE-79: DOM-based XSS
