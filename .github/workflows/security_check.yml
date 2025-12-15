@@ -71,7 +71,7 @@ jobs:
           echo "${{ steps.prep.outputs.files_to_scan }}"
           
           # Ejecutar scanner de vulnerabilidades
-          if python scan.py --commits 1 2>&1 | tee scan.log; then
+          if python git_scan_commits.py --commits 1 2>&1 | tee scan.log; then
             echo "vulnerable=false" >> $GITHUB_OUTPUT
             echo "✓ No vulnerabilities found"
           else
