@@ -1,0 +1,160 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Rajdhani:wght@300;400;500;600;700&display=swap');
+
+@layer base {
+  :root {
+    --background: 230 25% 8%;
+    --foreground: 210 40% 98%;
+
+    --card: 230 25% 12%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 230 25% 10%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 175 80% 50%;
+    --primary-foreground: 230 25% 8%;
+
+    --secondary: 280 80% 60%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 230 20% 18%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 200 100% 60%;
+    --accent-foreground: 230 25% 8%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 230 20% 20%;
+    --input: 230 20% 15%;
+    --ring: 175 80% 50%;
+
+    --radius: 0.75rem;
+
+    /* Custom gaming colors */
+    --neon-cyan: 175 80% 50%;
+    --neon-purple: 280 80% 60%;
+    --neon-pink: 320 80% 60%;
+    --neon-blue: 200 100% 60%;
+    --gaming-dark: 230 25% 6%;
+    --gaming-card: 230 25% 12%;
+
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 100%);
+    --gradient-secondary: linear-gradient(135deg, hsl(var(--secondary)) 0%, hsl(var(--neon-pink)) 100%);
+    --gradient-gaming: linear-gradient(135deg, hsl(230 25% 8%) 0%, hsl(250 30% 15%) 100%);
+    --gradient-card: linear-gradient(145deg, hsl(230 25% 14%) 0%, hsl(230 25% 10%) 100%);
+
+    /* Shadows */
+    --shadow-neon: 0 0 20px hsl(var(--primary) / 0.4);
+    --shadow-neon-strong: 0 0 40px hsl(var(--primary) / 0.6);
+    --shadow-purple: 0 0 30px hsl(var(--secondary) / 0.4);
+  }
+
+  .dark {
+    --background: 230 25% 8%;
+    --foreground: 210 40% 98%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-body antialiased;
+    background: var(--gradient-gaming);
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display;
+  }
+}
+
+@layer utilities {
+  .text-glow {
+    text-shadow: 0 0 10px hsl(var(--primary) / 0.8), 0 0 30px hsl(var(--primary) / 0.4);
+  }
+
+  .text-glow-purple {
+    text-shadow: 0 0 10px hsl(var(--secondary) / 0.8), 0 0 30px hsl(var(--secondary) / 0.4);
+  }
+
+  .box-glow {
+    box-shadow: var(--shadow-neon);
+  }
+
+  .box-glow-strong {
+    box-shadow: var(--shadow-neon-strong);
+  }
+
+  .box-glow-purple {
+    box-shadow: var(--shadow-purple);
+  }
+
+  .gradient-border {
+    position: relative;
+    background: var(--gradient-card);
+  }
+
+  .gradient-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: var(--gradient-primary);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  .animate-pulse-slow {
+    animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  .animate-glow {
+    animation: glow 2s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-20px); }
+}
+
+@keyframes glow {
+  from { box-shadow: 0 0 20px hsl(var(--primary) / 0.4); }
+  to { box-shadow: 0 0 40px hsl(var(--primary) / 0.8), 0 0 60px hsl(var(--primary) / 0.4); }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--gaming-dark));
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--primary) / 0.5);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary) / 0.8);
+}

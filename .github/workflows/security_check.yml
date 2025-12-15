@@ -1,0 +1,273 @@
+name: security-check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - test  # Solo ejecuta cuando el PR va a la rama 'test'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  
+jobs:
+  security-scan:
+    name: security-check
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.art.outputs.artifact-name }}
+      vulnerable-found: ${{ steps.scan.outputs.vulnerable }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Get changed files
+        id: files
+        run: |
+          echo "Base: ${{ github.event.pull_request.base.sha }}"
+          echo "Head: ${{ github.event.pull_request.head.sha }}"
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+          git fetch origin ${{ github.event.pull_request.head.ref }} --depth=1
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} || true)
+          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Prepare files list
+        id: prep
+        run: |
+          FILES="${{ steps.files.outputs.changed_files }}"
+          # Filtrar solo archivos de código válidos
+          VALID_EXTENSIONS="\.c$|\.cpp$|\.h$|\.hpp$|\.py$|\.java$|\.js$|\.php$|\.rb$|\.ts$|\.go$"
+          FILES_FILTERED=$(echo "$FILES" | tr '\n' ' ' | tr ' ' '\n' | grep -E "$VALID_EXTENSIONS" || true)
+          
+          if [ -z "$FILES_FILTERED" ]; then
+            echo "No source code files changed; exiting cleanly."
+            echo "artifact-name=none" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "files_to_scan<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES_FILTERED" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run vulnerability scanner
+        id: scan
+        run: |
+          echo "Files to analyze:"
+          echo "${{ steps.prep.outputs.files_to_scan }}"
+          
+          # Ejecutar scanner de vulnerabilidades (incluyendo archivos locales)
+          if python git_scan_commits.py --commits 1 --local 2>&1 | tee scan.log; then
+            echo "vulnerable=false" >> $GITHUB_OUTPUT
+            echo "✓ No vulnerabilities found"
+          else
+            echo "vulnerable=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Vulnerabilities detected"
+          fi
+
+      - name: Parse results
+        id: parse
+        if: always()
+        run: |
+          if [ -f result.json ]; then
+            # Extraer información del resultado
+            VULN_FOUND=$(jq -r '.summary.vulnerable_found' result.json)
+            FILES_ANALYZED=$(jq -r '.summary.files_analyzed' result.json)
+            
+            echo "vuln_found=$VULN_FOUND" >> $GITHUB_OUTPUT
+            echo "files_analyzed=$FILES_ANALYZED" >> $GITHUB_OUTPUT
+            
+            # Extraer archivos vulnerables
+            VULN_FILES=$(jq -r '.commits[].files[] | select(.is_vulnerable==true) | "\(.file): \(.prediction) (\(.confidence)%)"' result.json || true)
+            echo "vuln_files<<EOF" >> $GITHUB_OUTPUT
+            echo "$VULN_FILES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload results artifact
+        id: art
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-result
+          path: result.json
+
+  notify:
+    name: notify
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: always()
+    steps:
+      - name: Download result
+        uses: actions/download-artifact@v4
+        with:
+          name: security-scan-result
+        continue-on-error: true
+
+      - name: Read result
+        id: read
+        run: |
+          if [ -f result.json ]; then
+            cat result.json
+            VULN=$(jq -r '.summary.vulnerable_found' result.json)
+            FILES_ANALYZED=$(jq -r '.summary.files_analyzed' result.json)
+            echo "vuln=$VULN" >> $GITHUB_OUTPUT
+            echo "files_analyzed=$FILES_ANALYZED" >> $GITHUB_OUTPUT
+          else
+            echo "vuln=false" >> $GITHUB_OUTPUT
+            echo "files_analyzed=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment on PR with results
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            let result = null;
+            if (fs.existsSync('result.json')) {
+              result = JSON.parse(fs.readFileSync('result.json', 'utf8'));
+            }
+            
+            const pr_number = context.payload.pull_request.number;
+            const repo = context.repo;
+            
+            if (!result) {
+              const body = "⏭️ **Security scan:** No source code files to scan in this PR.";
+              await github.rest.issues.createComment({
+                owner: repo.owner,
+                repo: repo.repo,
+                issue_number: pr_number,
+                body
+              });
+              return;
+            }
+            
+            const vuln = result.summary && result.summary.vulnerable_found;
+            
+            if (vuln) {
+              // Vulnerabilities found
+              const vuln_files = result.commits
+                .flatMap(c => c.files)
+                .filter(f => f.is_vulnerable)
+                .map(f => `- **${f.file}**: ${f.prediction} (confidence: ${f.confidence.toFixed(1)}%)`)
+                .join("\n");
+              
+              const body = [
+                "⚠️ **Security scan result:** Vulnerabilities detected!",
+                "",
+                `**Files analyzed:** ${result.summary.files_analyzed}`,
+                `**Threshold:** ${result.summary.threshold}`,
+                "",
+                "**Flagged files:**",
+                vuln_files,
+                "",
+                "Please review and fix the security issues before merging.",
+                "An issue has been created to track this.",
+              ].join("\n");
+              
+              // Comment on PR
+              await github.rest.issues.createComment({
+                owner: repo.owner,
+                repo: repo.repo,
+                issue_number: pr_number,
+                body
+              });
+              
+              // Create issue
+              const title = `🔒 Security scan: vulnerabilities detected in PR #${pr_number}`;
+              const issue_body = [
+                `The automated security scanner detected vulnerabilities in PR #${pr_number}.`,
+                "",
+                "**Flagged files:**",
+                vuln_files,
+                "",
+                "Please review the code and fix the identified vulnerabilities.",
+              ].join("\n");
+              
+              await github.rest.issues.create({
+                owner: repo.owner,
+                repo: repo.repo,
+                title,
+                body: issue_body,
+                labels: ["security", "vulnerability"]
+              });
+            } else {
+              // No vulnerabilities
+              const body = [
+                "✅ **Security scan result:** No vulnerabilities detected!",
+                "",
+                `**Files analyzed:** ${result.summary.files_analyzed}`,
+                `**Threshold:** ${result.summary.threshold}`,
+              ].join("\n");
+              
+              await github.rest.issues.createComment({
+                owner: repo.owner,
+                repo: repo.repo,
+                issue_number: pr_number,
+                body
+              });
+            }
+
+      - name: Request review if vulnerable
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request' && steps.read.outputs.vuln == 'true'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.pulls.requestReviewers({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              reviewers: ["security-team"]  # Cambia a tu equipo de seguridad
+            });
+
+      - name: Telegram notification
+        if: steps.read.outputs.vuln == 'true'
+        run: |
+          if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            echo "⏭️ Telegram secrets not configured. Skipping notification."
+            exit 0
+          fi
+          
+          # Leer el archivo de resultado
+          if [ -f result.json ]; then
+            VULN_FILES=$(jq -r '.commits[].files[] | select(.is_vulnerable==true) | "\(.file): \(.prediction)"' result.json | sed ':a;N;$!ba;s/\n/%0A/g')
+            MESSAGE="🔒 Security scan: vulnerabilities detected in PR #${{ github.event.pull_request.number }}%0A%0AFlagged files:%0A${VULN_FILES}%0A%0AURL: ${{ github.event.pull_request.html_url }}"
+            
+            curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
+            -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+            -d text="${MESSAGE}" \
+            -d parse_mode="HTML"
+          fi
+
+  status-check:
+    name: Status check
+    runs-on: ubuntu-latest
+    needs: [security-scan, notify]
+    if: always()
+    steps:
+      - name: Check security scan status
+        run: |
+          if [ "${{ needs.security-scan.outputs.vulnerable-found }}" == "true" ]; then
+            echo "❌ Security vulnerabilities found!"
+            exit 1
+          else
+            echo "✅ Security check passed!"
+            exit 0
+          fi
