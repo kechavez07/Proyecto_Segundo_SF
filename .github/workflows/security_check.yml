@@ -3,7 +3,9 @@ name: security-check
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    # Solo para PR cuyo base sea 'test'
+    branches:
+      - test  # Solo ejecuta cuando el PR va a la rama 'test'
+
 permissions:
   contents: read
   pull-requests: write
@@ -17,12 +19,6 @@ jobs:
       artifact-name: ${{ steps.art.outputs.artifact-name }}
       vulnerable-found: ${{ steps.scan.outputs.vulnerable }}
     steps:
-      - name: Check PR base
-        if: ${{ github.event.pull_request.base.ref != 'test' }}
-        run: |
-          echo "PR base is not 'test' (it's ${{ github.event.pull_request.base.ref }}). Skipping."
-          exit 78
-
       - name: Checkout code
         uses: actions/checkout@v4
         with:
