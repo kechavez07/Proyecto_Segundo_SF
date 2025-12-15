@@ -72,7 +72,8 @@ jobs:
             });
 
       - name: Telegram notification
-        if: always() && (secrets.TELEGRAM_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != '')
+        if: always()
+        continue-on-error: true
         run: |
           if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
             exit 0
