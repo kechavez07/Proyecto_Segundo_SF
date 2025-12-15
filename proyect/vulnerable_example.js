@@ -1,7 +1,3 @@
-
-
-
-
 // VULNERABLE: SQL Injection
 function queryUserByName(username) {
     // CWE-89: SQL Injection
@@ -172,8 +168,3 @@ module.exports = {
     displayUserGreeting,
     safeGenerateToken
 };
-
-
-
-
-
