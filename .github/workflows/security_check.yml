@@ -4,7 +4,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     # Solo para PR cuyo base sea 'test'
-
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  
 jobs:
   security-scan:
     name: security-check
