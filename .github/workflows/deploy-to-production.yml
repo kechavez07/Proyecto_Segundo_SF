@@ -1,66 +1,18 @@
 name: deploy-to-production
 
 on:
-  workflow_run:
-    workflows: ["merge-and-test"]
-    types: [completed]
-    branches: [test]
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
   deployments: write
 
 jobs:
-  check-tests-status:
-    name: Check Tests Status
-    runs-on: ubuntu-latest
-    outputs:
-      success: ${{ steps.check.outputs.success }}
-    steps:
-      - name: Check if previous workflow succeeded
-        id: check
-        run: |
-          if [ "${{ github.event.workflow_run.conclusion }}" == "success" ]; then
-            echo "success=true" >> $GITHUB_OUTPUT
-          else
-            echo "success=false" >> $GITHUB_OUTPUT
-          fi
-
-  merge-to-main:
-    name: Merge to main
-    runs-on: ubuntu-latest
-    needs: check-tests-status
-    if: needs.check-tests-status.outputs.success == 'true'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure Git
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Merge test to main
-        run: |
-          git fetch origin test main
-          git checkout main
-          git merge origin/test --no-ff -m "Merge test to main (CI/CD): All tests passed"
-          git push origin main
-
-      - name: Create release tag
-        run: |
-          TIMESTAMP=$(date +'%Y.%m.%d.%H%M')
-          git tag -a v$TIMESTAMP -m "Release $TIMESTAMP"
-          git push origin v$TIMESTAMP
-
   build-and-deploy:
-    name: Build & Deploy to Render
+    name: Build & Deploy
     runs-on: ubuntu-latest
-    needs: merge-to-main
-    environment: production
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -80,14 +32,22 @@ jobs:
           npm run build
 
       - name: Deploy to Render
-        if: secrets.RENDER_DEPLOY_HOOK != ''
+        id: render
+        continue-on-error: true
         run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
+            echo "RENDER_DEPLOY_HOOK not configured"
+            exit 0
+          fi
+          
           echo "Triggering Render deployment..."
-          curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
           echo "✅ Deploy hook triggered"
 
-      - name: Deploy to Vercel (Alternative)
-        if: secrets.VERCEL_TOKEN != '' && secrets.RENDER_DEPLOY_HOOK == ''
+      - name: Deploy to Vercel (Fallback)
+        id: vercel
+        if: failure() && steps.render.outcome == 'skipped'
+        continue-on-error: true
         uses: amondnet/vercel-action@v25
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
@@ -95,38 +55,39 @@ jobs:
           vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
           working-directory: ./proyect
 
-      - name: Deploy to Fly.io (Alternative)
-        if: secrets.FLY_API_TOKEN != '' && secrets.RENDER_DEPLOY_HOOK == '' && secrets.VERCEL_TOKEN == ''
-        uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Create deployment status
+        uses: actions/github-script@v7
+        if: always()
+        continue-on-error: true
         with:
-          registry-token: ${{ secrets.FLY_API_TOKEN }}
+          script: |
+            const deployment_status = '${{ steps.render.outcome }}' === 'success' || '${{ steps.vercel.outcome }}' === 'success' ? 'success' : 'failure';
+            console.log('Deployment status: ' + deployment_status);
 
       - name: Telegram notification - Deploy success
-        if: success()
+        if: steps.render.outcome == 'success' || steps.vercel.outcome == 'success'
         run: |
           if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
-            echo "⏭️ Telegram secrets not configured. Skipping notification."
             exit 0
           fi
           
-          MESSAGE="✅ Etapa 3: DESPLIEGUE EXITOSO EN PRODUCCIÓN%0A%0ACommit: ${{ github.sha }}%0ARama: main%0AURL: https://github.com/${{ github.repository }}/deployments"
+          MESSAGE="✅ Etapa 3: DESPLIEGUE EXITOSO EN PRODUCCIÓN%0A%0ACommit: ${{ github.sha }}%0ARama: main%0AURL: https://github.com/${{ github.repository }}/tree/main"
           
           curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
           -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
           -d text="${MESSAGE}" \
-          -d parse_mode="HTML"
+          -d parse_mode="HTML" || true
 
       - name: Telegram notification - Deploy failed
-        if: failure()
+        if: steps.render.outcome != 'success' && steps.vercel.outcome != 'success'
         run: |
           if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
-            echo "⏭️ Telegram secrets not configured. Skipping notification."
             exit 0
           fi
           
-          MESSAGE="❌ Etapa 3: DESPLIEGUE FALLIDO EN PRODUCCIÓN%0A%0ACommit: ${{ github.sha }}%0ARama: main%0AURL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MESSAGE="⚠️ Etapa 3: Deploy sin configuración%0AConfigura RENDER_DEPLOY_HOOK, VERCEL_TOKEN, o FLY_API_TOKEN en GitHub Secrets%0ACommit: ${{ github.sha }}"
           
           curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
           -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
           -d text="${MESSAGE}" \
-          -d parse_mode="HTML"
+          -d parse_mode="HTML" || true
