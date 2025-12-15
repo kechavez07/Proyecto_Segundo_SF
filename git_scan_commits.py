@@ -28,6 +28,8 @@ import argparse
 MODEL_FILE = "modelo_vulnerabilidades.pkl"
 VALID_EXTENSIONS = ('.c', '.cpp', '.h', '.hpp', '.py', '.java', '.js', '.php', '.rb', '.ts', '.go')
 VULN_THRESHOLD = float(os.environ.get("VULN_THRESHOLD", "0.5"))
+SCAN_LOCAL_FILES = os.environ.get("SCAN_LOCAL_FILES", "true").lower() == "true"
+ANALYZE_DIR = "proyect"  # Directorio a analizar localmente
 
 def clean_code(text):
     """Limpieza para TF-IDF - DEBE SER IDÉNTICA AL ENTRENAMIENTO"""
@@ -119,6 +121,32 @@ def get_file_content(commit_hash: str, file_path: str) -> str:
         print(f"[ERROR] Error obteniendo contenido de {file_path}: {e}")
         return None
 
+def get_local_files(directory: str = "proyect") -> List[str]:
+    """Obtiene lista de archivos locales con extensiones válidas"""
+    local_files = []
+    try:
+        for root, dirs, files in os.walk(directory):
+            # Ignorar node_modules y otros directorios comunes
+            dirs[:] = [d for d in dirs if d not in ['.git', 'node_modules', '__pycache__', '.venv', 'venv']]
+            
+            for file in files:
+                if any(file.endswith(ext) for ext in VALID_EXTENSIONS):
+                    full_path = os.path.join(root, file)
+                    local_files.append(full_path)
+    except Exception as e:
+        print(f"[ERROR] Error al escanear directorio {directory}: {e}")
+    
+    return local_files
+
+def read_local_file(file_path: str) -> str:
+    """Lee contenido de un archivo local"""
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+    except Exception as e:
+        print(f"[ERROR] Error al leer {file_path}: {e}")
+        return None
+
 def analyze_file(filepath: str, code: str, model_data: dict) -> Dict:
     """Analiza un archivo para detectar vulnerabilidades"""
     try:
@@ -193,10 +221,13 @@ def main():
                        help='Rama a comparar con main (default: None)')
     parser.add_argument('--all', action='store_true',
                        help='Escanea todos los commits')
+    parser.add_argument('--local', action='store_true',
+                       help='Escanea también archivos locales en proyect/')
     parser.add_argument('--output', type=str, default='result.json',
                        help='Archivo de salida JSON (default: result.json)')
     
     args = parser.parse_args()
+    
     
     commits_to_scan = 0 if args.all else args.commits
     
@@ -204,74 +235,120 @@ def main():
     model_data = load_model()
     print("    ✓ Modelo cargado exitosamente.\n")
     
+    all_results = []
+    any_vulnerable = False
+    total_files_analyzed = 0
+    
+    # ===== ESCANEAR ARCHIVOS LOCALES =====
+    if args.local or SCAN_LOCAL_FILES:
+        print("[*] Escaneando archivos locales en proyect/...")
+        local_files = get_local_files(ANALYZE_DIR)
+        
+        if local_files:
+            local_results = {
+                'commit': {
+                    'hash': 'LOCAL',
+                    'author': 'Local Scan',
+                    'message': f'Análisis de {len(local_files)} archivos locales'
+                },
+                'files': []
+            }
+            
+            for file_path in local_files:
+                # Obtener contenido
+                code = read_local_file(file_path)
+                
+                if code is None:
+                    continue
+                
+                print(f"    - Analizando: {file_path}")
+                
+                # Limpiar ruta para que sea relativa
+                display_path = file_path.replace('\\', '/')
+                
+                # Analizar
+                result = analyze_file(display_path, code, model_data)
+                result['status'] = 'MODIFIED'
+                
+                local_results['files'].append(result)
+                total_files_analyzed += 1
+                
+                if result.get('is_vulnerable', False):
+                    any_vulnerable = True
+                    print(f"      ⚠️  VULNERABLE: {result['prediction']} ({result['confidence']:.1f}%)")
+            
+            if local_results['files']:
+                all_results.append(local_results)
+                print(f"    ✓ {len(local_files)} archivos locales analizados.\n")
+    
+    # ===== ESCANEAR COMMITS =====
     print("[*] Obteniendo archivos modificados en commits...")
     changed_files = get_changed_files(commits_to_scan, args.branch)
     
     if not changed_files:
-        print("[!] No se encontraron archivos modificados.")
-        sys.exit(0)
-    
-    print(f"    ✓ {len(changed_files)} cambios encontrados.\n")
-    
-    # Agrupar por commit
-    commits_data = {}
-    for commit_hash, file_path, change_type in changed_files:
-        if commit_hash not in commits_data:
-            commits_data[commit_hash] = {
-                'info': get_commit_info(commit_hash),
+        if not args.local and not SCAN_LOCAL_FILES:
+            print("[!] No se encontraron archivos modificados en commits.")
+    else:
+        print(f"    ✓ {len(changed_files)} cambios encontrados en commits.\n")
+        
+        # Agrupar por commit
+        commits_data = {}
+        for commit_hash, file_path, change_type in changed_files:
+            if commit_hash not in commits_data:
+                commits_data[commit_hash] = {
+                    'info': get_commit_info(commit_hash),
+                    'files': []
+                }
+            commits_data[commit_hash]['files'].append((file_path, change_type))
+        
+        # Analizar archivos de commits
+        for commit_hash, commit_info in commits_data.items():
+            print(f"[*] Analizando commit {commit_info['info']['hash']}: {commit_info['info']['message']}")
+            
+            commit_results = {
+                'commit': commit_info['info'],
                 'files': []
             }
-        commits_data[commit_hash]['files'].append((file_path, change_type))
+            
+            for file_path, change_type in commit_info['files']:
+                # Filtrar por extensión
+                if not any(file_path.endswith(ext) for ext in VALID_EXTENSIONS):
+                    continue
+                
+                print(f"    - Analizando: {file_path}")
+                
+                # Obtener contenido del archivo
+                code = get_file_content(commit_hash, file_path)
+                
+                if code is None:
+                    # Archivo eliminado
+                    commit_results['files'].append({
+                        'file': file_path,
+                        'status': 'deleted',
+                        'is_vulnerable': False
+                    })
+                    continue
+                
+                # Analizar
+                result = analyze_file(file_path, code, model_data)
+                result['status'] = change_type
+                
+                commit_results['files'].append(result)
+                total_files_analyzed += 1
+                
+                if result.get('is_vulnerable', False):
+                    any_vulnerable = True
+                    print(f"      ⚠️  VULNERABLE: {result['prediction']} ({result['confidence']:.1f}%)")
+            
+            if commit_results['files']:
+                all_results.append(commit_results)
     
-    # Analizar archivos
-    all_results = []
-    any_vulnerable = False
-    
-    for commit_hash, commit_info in commits_data.items():
-        print(f"[*] Analizando commit {commit_info['info']['hash']}: {commit_info['info']['message']}")
-        
-        commit_results = {
-            'commit': commit_info['info'],
-            'files': []
-        }
-        
-        for file_path, change_type in commit_info['files']:
-            # Filtrar por extensión
-            if not any(file_path.endswith(ext) for ext in VALID_EXTENSIONS):
-                continue
-            
-            print(f"    - Analizando: {file_path}")
-            
-            # Obtener contenido del archivo
-            code = get_file_content(commit_hash, file_path)
-            
-            if code is None:
-                # Archivo eliminado
-                commit_results['files'].append({
-                    'file': file_path,
-                    'status': 'deleted',
-                    'is_vulnerable': False
-                })
-                continue
-            
-            # Analizar
-            result = analyze_file(file_path, code, model_data)
-            result['status'] = change_type
-            
-            commit_results['files'].append(result)
-            
-            if result.get('is_vulnerable', False):
-                any_vulnerable = True
-                print(f"      ⚠️  VULNERABLE: {result['prediction']} ({result['confidence']:.1f}%)")
-        
-        if commit_results['files']:
-            all_results.append(commit_results)
     
     # Generar salida
     output = {
         'summary': {
-            'commits_scanned': len(commits_data),
-            'files_analyzed': sum(len(c['files']) for c in all_results),
+            'commits_scanned': len(all_results),
+            'files_analyzed': total_files_analyzed,
             'vulnerable_found': any_vulnerable,
             'threshold': VULN_THRESHOLD
         },
@@ -285,7 +362,7 @@ def main():
     print(f"\n{'='*70}")
     print(" RESUMEN")
     print(f"{'='*70}")
-    print(f"Commits escaneados:    {output['summary']['commits_scanned']}")
+    print(f"Fuentes escaneadas:    {output['summary']['commits_scanned']}")
     print(f"Archivos analizados:   {output['summary']['files_analyzed']}")
     print(f"Vulnerabilidades:      {output['summary']['vulnerable_found']}")
     print(f"Umbral de detección:   {VULN_THRESHOLD}")
