@@ -71,7 +71,7 @@ jobs:
           echo "${{ steps.prep.outputs.files_to_scan }}"
           
           # Ejecutar scanner de vulnerabilidades
-          if python scan.py --commits 1 2>&1 | tee scan.log; then
+          if python git_scan_commits.py --commits 1 2>&1 | tee scan.log; then
             echo "vulnerable=false" >> $GITHUB_OUTPUT
             echo "✓ No vulnerabilities found"
           else
@@ -251,9 +251,9 @@ jobs:
             MESSAGE="🔒 Security scan: vulnerabilities detected in PR #${{ github.event.pull_request.number }}%0A%0AFlagged files:%0A${VULN_FILES}%0A%0AURL: ${{ github.event.pull_request.html_url }}"
             
             curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
-              -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
-              -d text="${MESSAGE}" \
-              -d parse_mode="HTML"
+            -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+            -d text="${MESSAGE}" \
+            -d parse_mode="HTML"
           fi
 
   status-check:
