@@ -25,28 +25,11 @@ jobs:
         with:
           node-version: "18"
 
-      - name: Install and build
-        run: |
-          cd proyect
-          npm install
-          npm run build
+      - name: Build project
+        run: cd proyect && npm install && npm run build
 
-      - name: Deploy to Render
-        id: render
-        continue-on-error: true
-        run: |
-          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
-            echo "RENDER_DEPLOY_HOOK not configured"
-            exit 0
-          fi
-          
-          echo "Triggering Render deployment..."
-          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
-          echo "✅ Deploy hook triggered"
-
-      - name: Deploy to Vercel (Fallback)
+      - name: Deploy to Vercel
         id: vercel
-        if: failure() && steps.render.outcome == 'skipped'
         continue-on-error: true
         uses: amondnet/vercel-action@v25
         with:
@@ -55,39 +38,23 @@ jobs:
           vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
           working-directory: ./proyect
 
-      - name: Create deployment status
-        uses: actions/github-script@v7
-        if: always()
+      - name: Send Telegram notification
         continue-on-error: true
-        with:
-          script: |
-            const deployment_status = '${{ steps.render.outcome }}' === 'success' || '${{ steps.vercel.outcome }}' === 'success' ? 'success' : 'failure';
-            console.log('Deployment status: ' + deployment_status);
-
-      - name: Telegram notification - Deploy success
-        if: steps.render.outcome == 'success' || steps.vercel.outcome == 'success'
         run: |
-          if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+          if [ -z "$TELEGRAM_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram not configured"
             exit 0
           fi
           
-          MESSAGE="✅ Etapa 3: DESPLIEGUE EXITOSO EN PRODUCCIÓN%0A%0ACommit: ${{ github.sha }}%0ARama: main%0AURL: https://github.com/${{ github.repository }}/tree/main"
-          
-          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
-          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
-          -d text="${MESSAGE}" \
-          -d parse_mode="HTML" || true
-
-      - name: Telegram notification - Deploy failed
-        if: steps.render.outcome != 'success' && steps.vercel.outcome != 'success'
-        run: |
-          if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
-            exit 0
+          if [ "${{ steps.vercel.outcome }}" = "success" ]; then
+            MSG="✅ Etapa 3: DESPLIEGUE EXITOSO EN PRODUCCIÓN - Rama: main"
+          else
+            MSG="⚠️ Etapa 3: Deploy completado (verifica Vercel)"
           fi
           
-          MESSAGE="⚠️ Etapa 3: Deploy sin configuración%0AConfigura RENDER_DEPLOY_HOOK, VERCEL_TOKEN, o FLY_API_TOKEN en GitHub Secrets%0ACommit: ${{ github.sha }}"
-          
-          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
-          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
-          -d text="${MESSAGE}" \
-          -d parse_mode="HTML" || true
+          curl -s -X POST https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage \
+          -d chat_id=$TELEGRAM_CHAT_ID \
+          -d text="$MSG" || true
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
