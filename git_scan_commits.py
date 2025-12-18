@@ -25,7 +25,7 @@ from typing import List, Dict, Tuple
 import argparse
 
 # === CONFIGURACIÓN ===
-MODEL_FILE = "modelo_vulnerabilidades.pkl"
+MODEL_FILE = "model/modelo_vulnerabilidades.pkl"
 VALID_EXTENSIONS = ('.c', '.cpp', '.h', '.hpp', '.py', '.java', '.js', '.php', '.rb', '.ts', '.go')
 VULN_THRESHOLD = float(os.environ.get("VULN_THRESHOLD", "0.5"))
 SCAN_LOCAL_FILES = os.environ.get("SCAN_LOCAL_FILES", "true").lower() == "true"
