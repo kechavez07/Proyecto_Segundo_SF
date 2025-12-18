@@ -20,23 +20,83 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Git
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Merge test to main directly
-        run: |
-          git fetch origin main test
-          git checkout main
-          git merge origin/test --no-ff -m "🚀 Promote from test to main: All tests passed"
-          git push origin main
-
-      - name: Create release tag
-        run: |
-          TIMESTAMP=$(date +'%Y.%m.%d.%H%M')
-          git tag -a v$TIMESTAMP -m "Release $TIMESTAMP - Auto-deployed"
-          git push origin v$TIMESTAMP
+      - name: Create Pull Request to main
+        id: create_pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            
+            // Verificar si ya existe un PR abierto de test a main
+            const { data: existingPRs } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open',
+              head: `${owner}:test`,
+              base: 'main'
+            });
+            
+            if (existingPRs.length > 0) {
+              console.log(`✓ PR already exists: #${existingPRs[0].number}`);
+              core.setOutput('pr_number', existingPRs[0].number);
+              core.setOutput('pr_url', existingPRs[0].html_url);
+              
+              // Auto-merge existing PR
+              try {
+                await github.rest.pulls.merge({
+                  owner,
+                  repo,
+                  pull_number: existingPRs[0].number,
+                  merge_method: 'squash'
+                });
+                console.log('✓ PR auto-merged');
+                core.setOutput('merged', 'true');
+              } catch (e) {
+                console.log('Merge failed:', e.message);
+                core.setOutput('merged', 'false');
+              }
+              return;
+            }
+            
+            // Crear nuevo PR
+            const { data: pr } = await github.rest.pulls.create({
+              owner,
+              repo,
+              title: '🚀 Tests Passed - Ready for Production',
+              head: 'test',
+              base: 'main',
+              body: [
+                '## ✅ All Tests Passed',
+                '',
+                'All automated tests have passed successfully.',
+                '',
+                '**Ready for production deployment**',
+                '',
+                `**Commit:** ${context.sha}`
+              ].join('\n')
+            });
+            
+            console.log(`✓ Created PR #${pr.number}: ${pr.html_url}`);
+            core.setOutput('pr_number', pr.number);
+            core.setOutput('pr_url', pr.html_url);
+            
+            // Auto-merge immediately
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            try {
+              await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: pr.number,
+                merge_method: 'squash'
+              });
+              console.log('✓ PR auto-merged');
+              core.setOutput('merged', 'true');
+            } catch (e) {
+              console.log('Merge failed:', e.message);
+              core.setOutput('merged', 'false');
+            }
 
       - name: Telegram notification
         if: always()
@@ -45,7 +105,11 @@ jobs:
             exit 0
           fi
           
-          MESSAGE="🚀 Etapa 3: PROMOCIÓN A MAIN COMPLETADA%0A%0A✅ Tests pasados en test branch%0A📦 Release: v$(date +'%Y.%m.%d.%H%M')%0A🔗 Commit: ${{ github.sha }}"
+          if [ "${{ steps.create_pr.outputs.merged }}" = "true" ]; then
+            MESSAGE="✅ TEST → MAIN: MERGE EXITOSO%0A%0A🚀 PR #${{ steps.create_pr.outputs.pr_number }} mergeado%0A📦 Código promovido a producción%0A🔗 Iniciando deploy..."
+          else
+            MESSAGE="⚠️ TEST → MAIN: PR CREADO%0A%0APR #${{ steps.create_pr.outputs.pr_number }}%0A🔗 ${{ steps.create_pr.outputs.pr_url }}%0A⏳ Esperando merge manual"
+          fi
           
           curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
           -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \

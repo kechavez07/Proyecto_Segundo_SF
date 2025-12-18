@@ -54,8 +54,19 @@ jobs:
           script: |
             const testSuccess = '${{ steps.tests.outputs.exit_code }}' === '0';
             const body = testSuccess 
-              ? "✅ **Etapa 2**: Tests pasados exitosamente!"
-              : "⚠️ **Etapa 2**: Tests con advertencias";
+              ? [
+                  "## ✅ Etapa 2: TESTS PASADOS EXITOSAMENTE",
+                  "",
+                  "**Resultado:**",
+                  "- ✓ Pruebas unitarias: PASSED",
+                  "- ✓ Linter: PASSED",
+                  "",
+                  "**Próximos pasos:**",
+                  "1. Merge automático a `test`",
+                  "2. Creación de PR automático test → main",
+                  "3. Deploy a producción"
+                ].join("\n")
+              : "⚠️ **Etapa 2**: Tests con advertencias (continuar)";
             
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -64,7 +75,7 @@ jobs:
               body
             });
 
-      - name: Send Telegram notification
+      - name: Send Telegram notification - Test Results
         continue-on-error: true
         run: |
           if [ -z "$TELEGRAM_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
@@ -73,9 +84,9 @@ jobs:
           fi
           
           if [ "${{ steps.tests.outputs.exit_code }}" = "0" ]; then
-            MSG="✅ Etapa 2: Tests pasados"
+            MSG="✅ Etapa 2: TESTS PASADOS%0A%0APR #${{ github.event.pull_request.number }}%0A✓ Pruebas unitarias completadas%0A✓ Linter ejecutado%0A%0A➡️ Procediendo a merge..."
           else
-            MSG="⚠️ Etapa 2: Tests con advertencias"
+            MSG="⚠️ Etapa 2: Tests con advertencias%0A%0APR #${{ github.event.pull_request.number }}%0A⚠️ Algunas pruebas fallaron pero continuando..."
           fi
           
           curl -s -X POST https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage \
@@ -111,7 +122,7 @@ jobs:
               return 'failed';
             }
 
-      - name: Telegram notification - Merge a test realizado
+      - name: Telegram notification - Merge a test completado
         if: always()
         run: |
           if [ -z "$TELEGRAM_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
@@ -119,7 +130,7 @@ jobs:
             exit 0
           fi
           
-          MESSAGE="✅ Etapa 2: MERGE A TEST COMPLETADO%0A%0A📦 PR #${{ github.event.pull_request.number }} mergeado exitosamente%0A🔗 Commit: ${{ github.sha }}%0A%0A➡️ Promoviendo a main..."
+          MESSAGE="✅ DEV → TEST: MERGE EXITOSO%0A%0A📦 PR #${{ github.event.pull_request.number }} mergeado%0A✓ Código en rama test%0A🔗 Commit: ${GITHUB_SHA:0:7}%0A%0A➡️ Creando PR test → main..."
           
           curl -s -X POST https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage \
           -d chat_id=$TELEGRAM_CHAT_ID \
