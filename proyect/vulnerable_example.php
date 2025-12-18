@@ -1,3 +1,6 @@
+
+
+
 <?php
 
 // VULNERABLE: SQL Injection
@@ -153,3 +156,5 @@ function safe_upload_file() {
 }
 
 ?>
+
+
