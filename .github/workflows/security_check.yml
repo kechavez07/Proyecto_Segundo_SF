@@ -15,8 +15,7 @@ jobs:
     name: security-check
     runs-on: ubuntu-latest
     outputs:
-      artifact-name: ${{ steps.art.outputs.artifact-name }}
-      vulnerable-found: ${{ steps.scan.outputs.vulnerable }}
+      vulnerable-found: ${{ steps.vuln_check.outputs.vuln }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -80,41 +79,26 @@ jobs:
 
       - name: Upload results artifact
         id: art
-        if: always()
+        if: always() && hashFiles('result.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: security-scan-result
           path: result.json
-
-  notify:
-    name: notify
-    runs-on: ubuntu-latest
-    needs: security-scan
-    if: always()
-    steps:
-      - name: Download result
-        uses: actions/download-artifact@v4
-        with:
-          name: security-scan-result
         continue-on-error: true
 
-      - name: Read result
-        id: read
+      - name: Set vulnerability output
+        id: vuln_check
         run: |
           if [ -f result.json ]; then
-            cat result.json
             VULN=$(jq -r '.summary.vulnerable_found' result.json)
-            FILES_ANALYZED=$(jq -r '.summary.files_analyzed' result.json)
             echo "vuln=$VULN" >> $GITHUB_OUTPUT
-            echo "files_analyzed=$FILES_ANALYZED" >> $GITHUB_OUTPUT
           else
             echo "vuln=false" >> $GITHUB_OUTPUT
-            echo "files_analyzed=0" >> $GITHUB_OUTPUT
           fi
 
       - name: Create issue if vulnerabilities found
         uses: actions/github-script@v7
-        if: steps.read.outputs.vuln == 'true'
+        if: steps.vuln_check.outputs.vuln == 'true'
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -154,7 +138,7 @@ jobs:
             });
 
       - name: Telegram notification - Vulnerabilities Found
-        if: steps.read.outputs.vuln == 'true'
+        if: steps.vuln_check.outputs.vuln == 'true'
         run: |
           if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
             echo "Telegram not configured"
@@ -174,7 +158,7 @@ jobs:
     name: Create PR to test
     runs-on: ubuntu-latest
     needs: [security-scan]
-    if: needs.security-scan.outputs.vulnerable-found != 'true'
+    if: always() && (needs.security-scan.result == 'success' || needs.security-scan.outputs.vulnerable-found != 'true')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
