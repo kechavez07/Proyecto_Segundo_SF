@@ -1,7 +1,3 @@
-
-
-
-
 // VULNERABLE: SQL Injection
 function queryUserByName(username) {
     // CWE-89: SQL Injection
@@ -15,10 +11,6 @@ function displayUserGreeting() {
     let name = document.location.search.substring(1);
     document.getElementById('greeting').innerHTML = `<h1>Hello ${name}</h1>`;
 }
-
-
-
-
 
 // VULNERABLE: DOM-based XSS
 function loadContentFromURL() {
