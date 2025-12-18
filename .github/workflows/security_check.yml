@@ -1,9 +1,10 @@
 name: security-check
 
 on:
-  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
     branches:
-      - dev  # Se ejecuta cuando hay push a dev
+      - test  # Se ejecuta cuando se crea PR de dev → test
 
 permissions:
   contents: write
@@ -32,13 +33,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Get changed files
+      - name: Telegram notification - Inicio de revisión
+        continue-on-error: true
+        run: |
+          if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            echo "Telegram not configured"
+            exit 0
+          fi
+          
+          MESSAGE="🔍 Etapa 1: INICIANDO REVISIÓN DE SEGURIDAD%0A%0A📋 PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}%0A👤 Autor: @${{ github.actor }}%0A🔗 ${{ github.event.pull_request.html_url }}"
+          
+          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
+          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+          -d text="${MESSAGE}" || true
+
+      - name: Get changed files in PR
         id: files
         run: |
-          echo "Analyzing commits from push to dev branch"
-          # Usar el commit anterior para comparar
-          git fetch origin dev --depth=2
-          CHANGED=$(git diff --name-only HEAD~1 HEAD || git diff --name-only HEAD || true)
+          echo "Analyzing files in PR from dev to test"
+          echo "Base: ${{ github.event.pull_request.base.sha }}"
+          echo "Head: ${{ github.event.pull_request.head.sha }}"
+          
+          # Obtener archivos modificados en el PR
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+          git fetch origin ${{ github.event.pull_request.head.ref }} --depth=1
+          
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} || true)
           echo "changed_files<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGED" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -94,6 +114,31 @@ jobs:
             echo "vuln=$VULN" >> $GITHUB_OUTPUT
           else
             echo "vuln=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Telegram notification - Resultado clasificación
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            echo "Telegram not configured"
+            exit 0
+          fi
+          
+          if [ -f result.json ]; then
+            FILES=$(jq -r '.summary.files_analyzed' result.json)
+            VULN=$(jq -r '.summary.vulnerable_found' result.json)
+            
+            if [ "$VULN" = "true" ]; then
+              DETAILS=$(jq -r '.commits[].files[] | select(.is_vulnerable==true) | "- \(.file): \(.prediction) (probabilidad: \(.confidence)%)"' result.json | sed ':a;N;$!ba;s/\n/%0A/g')
+              MESSAGE="⚠️ RESULTADO: CÓDIGO VULNERABLE DETECTADO%0A%0A📊 Archivos analizados: $FILES%0A🚨 Detalles:%0A$DETAILS%0A%0A❌ PR #${{ github.event.pull_request.number }} será rechazado"
+            else
+              MESSAGE="✅ RESULTADO: CÓDIGO SEGURO%0A%0A📊 Archivos analizados: $FILES%0A✓ No se detectaron vulnerabilidades%0A%0A➡️ Continuando con el pipeline..."
+            fi
+            
+            curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
+            -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
+            -d text="${MESSAGE}" || true
           fi
 
       - name: Create issue if vulnerabilities found
@@ -154,70 +199,36 @@ jobs:
             -d text="${MESSAGE}" || true
           fi
 
-  create-pr-to-test:
-    name: Create PR to test
+  approve-security:
+    name: Approve Security Check
     runs-on: ubuntu-latest
     needs: [security-scan]
-    if: always() && (needs.security-scan.result == 'success' || needs.security-scan.outputs.vulnerable-found != 'true')
+    if: needs.security-scan.outputs.vulnerable-found != 'true'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          
-      - name: Create Pull Request to test
+      - name: Comment on PR - Security Approved
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { owner, repo } = context.repo;
+            const body = [
+              '## ✅ Etapa 1: REVISIÓN DE SEGURIDAD APROBADA',
+              '',
+              '**Resultado del modelo de clasificación:**',
+              '- Estado: CÓDIGO SEGURO',
+              '- Archivos analizados: Ver detalles en logs',
+              '',
+              '**Próximos pasos automáticos:**',
+              '1. ✓ Revisión de seguridad completada',
+              '2. → Ejecutar pruebas automáticas',
+              '3. → Merge automático a test (si pruebas pasan)',
+              '4. → Despliegue a producción',
+              '',
+              '🔒 Este PR ha pasado el filtro de seguridad con el modelo de ML.'
+            ].join('\n');
             
-            // Verificar si ya existe un PR abierto de dev a test
-            const { data: existingPRs } = await github.rest.pulls.list({
-              owner,
-              repo,
-              state: 'open',
-              head: `${owner}:dev`,
-              base: 'test'
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body
             });
-            
-            if (existingPRs.length > 0) {
-              console.log(`✓ PR already exists: #${existingPRs[0].number}`);
-              return;
-            }
-            
-            // Crear nuevo PR
-            const { data: pr } = await github.rest.pulls.create({
-              owner,
-              repo,
-              title: '🔒 Security Check Passed - Ready for Testing',
-              head: 'dev',
-              base: 'test',
-              body: [
-                '## ✅ Security Scan Passed',
-                '',
-                'All security checks have passed successfully.',
-                '',
-                '**Next Steps:**',
-                '- Automated tests will run on this PR',
-                '- If tests pass, it will be automatically merged to `test`',
-                '',
-                `**Commit:** ${context.sha}`,
-                `**Author:** @${context.actor}`
-              ].join('\n')
-            });
-            
-            console.log(`✓ Created PR #${pr.number}: ${pr.html_url}`);
-            
-      - name: Telegram notification - PR Created
-        run: |
-          if [ -z "${{ secrets.TELEGRAM_TOKEN }}" ] || [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
-            echo "Telegram not configured"
-            exit 0
-          fi
-          
-          MESSAGE="✅ Etapa 1: ESCANEO DE SEGURIDAD EXITOSO%0A%0A📝 PR automático creado: dev → test%0A🔗 Commit: ${{ github.sha }}"
-          
-          curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage \
-          -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
-          -d text="$MESSAGE" || true
